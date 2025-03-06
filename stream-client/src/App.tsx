@@ -8,6 +8,8 @@ import { StreamConfig, ChatMessage } from './types';
 const webRTCService = new WebRTCService();
 
 export const App: React.FC = () => {
+  console.log('%c[App] Component loaded!', 'background: #222; color: #bada55; font-size: 16px; font-weight: bold;');
+
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [username, setUsername] = useState('');
@@ -18,6 +20,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     webRTCService.setOnChatMessage((message) => {
+      console.log('[App] Received chat message from WebRTCService:', message);
       setMessages((prev) => [...prev, message]);
     });
 
@@ -53,23 +56,23 @@ export const App: React.FC = () => {
       
       console.log('Connection successful, setting up streaming');
       
-      // Start video streaming regardless of data channel status
+      // Start video streaming first and wait for it to complete
       if (config.videoFile) {
         console.log('Starting video stream with file:', config.videoFile.name);
         await webRTCService.startStreaming(config.videoFile);
         console.log('Video streaming started successfully');
         setStreamStarted(true);
-      }
-      
-      // Setup data channel but don't block on it
-      try {
-        console.log('Setting up data channel');
-        await webRTCService.setupDataChannel();
-        console.log('Data channel setup successfully');
-      } catch (error) {
-        console.error('Data channel setup failed, but continuing with video:', error);
-        // Show a warning but don't fail completely
-        setError('Chat functionality not available, but streaming is working');
+        
+        // Only setup data channel after video producer is ready
+        try {
+          console.log('Setting up data channel');
+          await webRTCService.setupDataChannel();
+          console.log('Data channel setup successfully');
+        } catch (error) {
+          console.error('Data channel setup failed, but continuing with video:', error);
+          // Show a warning but don't fail completely
+          setError('Chat functionality not available, but streaming is working');
+        }
       }
       
       setUsername(config.username);
@@ -83,7 +86,10 @@ export const App: React.FC = () => {
   };
 
   const handleSendMessage = (message: ChatMessage) => {
+    console.log('[App] handleSendMessage called with:', message);
+    console.log('[App] Calling webRTCService.sendChatMessage');
     webRTCService.sendChatMessage(message);
+    console.log('[App] Adding message to local state');
     setMessages((prev) => [...prev, message]);
   };
 

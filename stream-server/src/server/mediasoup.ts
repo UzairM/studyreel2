@@ -1,12 +1,14 @@
 import * as mediasoup from 'mediasoup';
-import { Worker, Router, WebRtcTransport, Producer, RtpCodecCapability, DtlsParameters, RtpParameters } from 'mediasoup/node/lib/types';
+import { Worker, Router, WebRtcTransport, Producer, DataProducer, RtpCodecCapability, DtlsParameters, RtpParameters } from 'mediasoup/node/lib/types';
 
 export class MediasoupServer {
   private worker: Worker | null = null;
   private router: Router | null = null;
   private producers: Map<string, Producer> = new Map();
+  private dataProducers: Map<string, DataProducer> = new Map();
   private transports: Map<string, WebRtcTransport> = new Map();
   private socketToTransport: Map<string, string> = new Map(); // Map socketId to transportId
+  private socketToStreamId: Map<string, string> = new Map(); // Map socketId to streamId
 
   async init() {
     console.log('Initializing Mediasoup worker...');
@@ -170,6 +172,10 @@ export class MediasoupServer {
     try {
       const producer = await transport.produce({ kind, rtpParameters });
       this.producers.set(producer.id, producer);
+      
+      // Store the mapping of socket to stream ID
+      this.socketToStreamId.set(socketId, producer.id);
+      console.log(`Socket ${socketId} is now associated with stream ${producer.id}`);
 
       console.log(`Producer ${producer.id} created for socket ${socketId} with kind ${kind}`);
 
@@ -201,6 +207,54 @@ export class MediasoupServer {
     }));
     console.log(`Getting ${producerList.length} producers`);
     return producerList;
+  }
+
+  // Add a producer with a custom ID
+  addProducer(id: string, producer: Producer) {
+    console.log(`Adding producer with custom ID: ${id}`);
+    this.producers.set(id, producer);
+  }
+
+  // Get a specific producer by ID
+  getProducer(id: string) {
+    return this.producers.get(id);
+  }
+
+  // Add a data producer with a custom ID
+  addDataProducer(id: string, dataProducer: DataProducer) {
+    console.log(`Adding data producer with custom ID: ${id}`);
+    console.log(`Data producer details: { id: ${dataProducer.id}, closed: ${dataProducer.closed}, label: ${dataProducer.label}, protocol: ${dataProducer.protocol} }`);
+    this.dataProducers.set(id, dataProducer);
+    
+    // Log the current map of data producers to help with debugging
+    console.log(`Current data producers (${this.dataProducers.size}): [${Array.from(this.dataProducers.keys()).join(', ')}]`);
+  }
+
+  // Get a specific data producer by ID
+  getDataProducer(id: string) {
+    const dataProducer = this.dataProducers.get(id);
+    if (!dataProducer) {
+      console.log(`Data producer not found: ${id}`);
+      console.log(`Available data producers: [${Array.from(this.dataProducers.keys()).join(', ')}]`);
+    } else {
+      console.log(`Found data producer ${id}`);
+    }
+    return dataProducer;
+  }
+
+  // Get all data producers
+  getDataProducers() {
+    return this.dataProducers;
+  }
+
+  // Associate a socket with a stream ID
+  setSocketStreamId(socketId: string, streamId: string) {
+    this.socketToStreamId.set(socketId, streamId);
+  }
+
+  // Get the stream ID for a socket
+  getSocketStreamId(socketId: string) {
+    return this.socketToStreamId.get(socketId);
   }
 
   async consume(transportId: string, producerId: string, rtpCapabilities: mediasoup.types.RtpCapabilities) {
@@ -242,11 +296,16 @@ export class MediasoupServer {
 
   cleanup(socketId: string) {
     console.log(`Cleaning up resources for socket ${socketId}`);
+    
+    // Clean up any associated stream ID
+    this.socketToStreamId.delete(socketId);
+    
+    // Get the transport ID for this socket
     const transportId = this.socketToTransport.get(socketId);
     if (transportId) {
+      console.log(`Closing transport ${transportId}`);
       const transport = this.transports.get(transportId);
       if (transport) {
-        console.log(`Closing transport ${transportId}`);
         transport.close();
         this.transports.delete(transportId);
       }
@@ -259,6 +318,55 @@ export class MediasoupServer {
         producer.close();
         this.producers.delete(producerId);
       }
+    }
+  }
+
+  // Add a method to listen for data producer messages
+  setupDataProducerListeners(dataProducer: DataProducer, streamId: string) {
+    console.log(`Setting up data producer listeners for ${dataProducer.id}`);
+    
+    dataProducer.on('transportclose', () => {
+      console.log(`Data producer ${dataProducer.id} closed due to transport close`);
+      this.dataProducers.delete(dataProducer.id);
+    });
+    
+    // Use observer for other events
+    dataProducer.observer.on('close', () => {
+      console.log(`Data producer ${dataProducer.id} closed`);
+      this.dataProducers.delete(dataProducer.id);
+    });
+    
+    // Store the association of this data producer with its stream ID
+    dataProducer.appData = { ...dataProducer.appData, streamId };
+    
+    // Note: In mediasoup, DataProducer doesn't emit 'message' events directly
+    // Messages are handled through DataConsumer.on('message') handlers
+    console.log(`Data producer ${dataProducer.id} ready to receive messages for stream ${streamId}`);
+  }
+  
+  // Helper to broadcast messages to data consumers for a specific stream
+  broadcastMessageToStream(streamId: string, message: Record<string, unknown>): void {
+    console.log(`Broadcasting message to consumers for stream ${streamId}`);
+    
+    // Get the data producer ID for this stream
+    const dataProducerId = `${streamId}-data`;
+    const dataProducer = this.dataProducers.get(dataProducerId);
+    
+    if (!dataProducer) {
+      console.error(`Data producer not found for stream ${streamId}`);
+      return;
+    }
+    
+    // Prepare the message
+    const serializedMsg = JSON.stringify(message);
+    const buffer = Buffer.from(serializedMsg);
+    
+    try {
+      // In mediasoup, we send through the producer to reach all consumers
+      dataProducer.send(buffer);
+      console.log(`Message sent through data producer ${dataProducerId}`);
+    } catch (error) {
+      console.error(`Failed to broadcast message to stream ${streamId}:`, error);
     }
   }
 

@@ -60,6 +60,15 @@ export class WebRTCService {
     return new Promise((resolve, reject) => {
       this.socket!.on('connect', async () => {
         console.log('[WebRTCService] Connected to server with socket ID:', this.socket!.id);
+        
+        // Set up socket event listener for chat messages
+        this.socket!.on('broadcastChatMessage', (data: { streamId: string, message: ChatMessage }) => {
+          console.log('[WebRTCService] Received broadcast chat message via socket.io:', data);
+          if (this.onChatMessage) {
+            this.onChatMessage(data.message);
+          }
+        });
+        
         try {
           // Get router RTP capabilities
           console.log('[WebRTCService] Getting router RTP capabilities');
@@ -212,9 +221,20 @@ export class WebRTCService {
 
     this.producerTransport.on('connectionstatechange', (state: string) => {
       console.log(`[WebRTCService] Producer transport connection state changed to ${state}`);
-      if (state === 'failed') {
+      if (state === 'failed' || state === 'closed') {
         console.error('[WebRTCService] Transport connection failed');
-        this.producerTransport.close();
+      }
+    });
+
+    // Add listener for SCTP state changes
+    this.producerTransport.on('sctpstatechange', (state: string) => {
+      console.log(`[WebRTCService] Producer transport SCTP state changed to ${state}`);
+      if (state === 'connecting') {
+        console.log('[WebRTCService] SCTP is connecting, data channels will be available soon');
+      } else if (state === 'connected') {
+        console.log('[WebRTCService] SCTP is connected, data channels are now available');
+      } else if (state === 'failed') {
+        console.error('[WebRTCService] SCTP connection failed, data channels will not work');
       }
     });
   }
@@ -363,70 +383,126 @@ export class WebRTCService {
   }
 
   async setupDataChannel(): Promise<void> {
-    console.log('[WebRTCService] Setting up data channel');
-
     try {
-      // Check if the transport exists
-      if (!this.producerTransport) {
-        console.error('[WebRTCService] Cannot setup data channel: no producer transport');
-        throw new Error('No producer transport available');
-      }
-
-      // Check if the transport has SCTP enabled
-      if (!this.producerTransport.sctpState) {
-        console.warn('[WebRTCService] Transport may not have SCTP enabled, will try anyway');
-      }
-
-      console.log('[WebRTCService] Creating data producer');
-      this.dataProducer = await this.producerTransport.produceData({
-        ordered: true,
-        maxPacketLifeTime: 5000, // 5 seconds
-        label: 'chat',
-        protocol: 'chat',
-      });
-
-      console.log('[WebRTCService] Data producer created with ID:', this.dataProducer.id);
-      this.dataChannel = this.dataProducer._dataChannel;
+      console.log('[WebRTCService] Setting up data channel for chat messages');
       
-      if (this.dataChannel) {
-        console.log('[WebRTCService] Data channel setup with label:', this.dataChannel.label);
+      // First wait for video producer to be available
+      if (!this.videoProducer) {
+        console.log('[WebRTCService] Video producer not available yet, waiting for it...');
         
-        this.dataChannel.onopen = () => {
-          console.log('[WebRTCService] Data channel opened');
-        };
-        
-        this.dataChannel.onclose = () => {
-          console.log('[WebRTCService] Data channel closed');
-        };
-        
-        this.dataChannel.onerror = (event) => {
-          console.error('[WebRTCService] Data channel error:', event);
-        };
-        
-        this.dataChannel.onmessage = (event) => {
-          console.log('[WebRTCService] Data channel message received:', event.data);
-          if (this.onChatMessage) {
-            const message: ChatMessage = JSON.parse(event.data);
-            this.onChatMessage(message);
-          }
-        };
-      } else {
-        console.error('[WebRTCService] Failed to create data channel');
-        throw new Error('Failed to create data channel');
+        // Wait for the video producer to be created, up to 10 seconds
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const maxAttempts = 100; // 10 seconds total (100 * 100ms)
+            let attempts = 0;
+            
+            const checkInterval = setInterval(() => {
+              attempts++;
+              
+              if (this.videoProducer) {
+                console.log('[WebRTCService] Video producer is now available');
+                clearInterval(checkInterval);
+                resolve();
+              } else if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                reject(new Error('Timeout waiting for video producer'));
+              }
+            }, 100);
+          });
+        } catch (error) {
+          console.error('[WebRTCService] Timeout waiting for video producer:', error);
+          return Promise.resolve(); // Exit without error to allow fallback to socket.io
+        }
       }
+      
+      // Double check that we have the video producer
+      if (!this.videoProducer) {
+        console.error('[WebRTCService] Video producer still not available after waiting');
+        return Promise.resolve();
+      }
+      
+      // Now we can use the correct producer ID
+      const videoProducerId = this.videoProducer.id;
+      console.log(`[WebRTCService] Got video producer ID: ${videoProducerId}`);
+      
+      // Use the server's data producer ID format
+      const expectedDataProducerId = `${videoProducerId}-data`;
+      console.log(`[WebRTCService] Using expected data producer ID: ${expectedDataProducerId}`);
+      
+      // Emit an event to consume the data producer that was automatically created by the server
+      this.socket?.emit('consumeData', {
+        dataProducerId: expectedDataProducerId
+      }, async (response: any) => {
+        try {
+          if (response.error) {
+            console.error(`[WebRTCService] Error consuming data producer: ${response.error}`);
+            return;
+          }
+          
+          console.log('[WebRTCService] Data consumer created successfully');
+          console.log('[WebRTCService] Data channel setup completed');
+        } catch (error) {
+          console.error('[WebRTCService] Error setting up data consumer:', error);
+        }
+      });
     } catch (error) {
-      console.error('[WebRTCService] Error setting up data channel:', error);
-      // Don't throw here - just log the error and continue without data channel
-      console.warn('[WebRTCService] Continuing without data channel');
+      console.error('[WebRTCService] Error in data channel setup:', error);
+      console.warn('[WebRTCService] Will not be able to send messages via WebRTC');
     }
+    
+    console.log('[WebRTCService] Data channel setup completed');
+    return Promise.resolve();
   }
 
   sendChatMessage(message: ChatMessage): void {
     console.log('[WebRTCService] Sending chat message:', message);
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      this.dataChannel.send(JSON.stringify(message));
-    } else {
-      console.error('[WebRTCService] Cannot send message, data channel not open');
+
+    if (!this.socket) {
+      console.error('[WebRTCService] Cannot send message: Socket not connected');
+      return;
+    }
+
+    try {
+      // Make sure we have a video producer before sending
+      if (!this.videoProducer) {
+        console.error('[WebRTCService] Cannot send message: No video producer available');
+        return;
+      }
+
+      const videoProducerId = this.videoProducer.id;
+      if (!videoProducerId) {
+        console.error('[WebRTCService] Cannot send message: Video producer has no ID');
+        return;
+      }
+
+      console.log(`[WebRTCService] Using stream ID from video producer: ${videoProducerId}`);
+      
+      // Try to send via WebRTC data channel first
+      const dataProducerId = `${videoProducerId}-data`;
+      console.log(`[WebRTCService] Checking for data consumer with ID: ${dataProducerId}`);
+      
+      // Check if we have a working data channel
+      if (this.producerTransport?.connectionState === 'connected') {
+        console.log('[WebRTCService] Producer transport is connected, attempting to use data channel');
+        
+        // Send message using socket.io as fallback
+        console.log('[WebRTCService] Using socket.io as fallback for message sending');
+        this.socket.emit('chatMessage', {
+          streamId: videoProducerId,  // Use the video producer ID as the stream ID
+          message
+        });
+        console.log('[WebRTCService] Message sent via socket.io');
+      } else {
+        // Send the message via Socket.IO to the server
+        console.log('[WebRTCService] Producer transport not connected, using socket.io');
+        this.socket.emit('chatMessage', {
+          streamId: videoProducerId,  // Use the video producer ID as the stream ID
+          message
+        });
+        console.log('[WebRTCService] Message sent via socket.io');
+      }
+    } catch (error) {
+      console.error('[WebRTCService] Error sending chat message:', error);
     }
   }
 

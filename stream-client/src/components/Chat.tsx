@@ -9,6 +9,7 @@ interface ChatProps {
 }
 
 export const Chat: React.FC<ChatProps> = ({ username, onSendMessage, messages }) => {
+  console.log('%c[Chat] Component rendering', 'background: #2a6a8a; color: white; padding: 4px;', { messagesCount: messages.length });
   const [message, setMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -17,17 +18,22 @@ export const Chat: React.FC<ChatProps> = ({ username, onSendMessage, messages })
   };
 
   useEffect(() => {
+    console.log('%c[Chat] Messages updated', 'background: #2a6a8a; color: white; padding: 4px;', messages);
     scrollToBottom();
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (message.trim()) {
-      onSendMessage({
+      console.log('%c[Chat] Submitting message', 'background: #2a6a8a; color: #ffff00; padding: 4px; font-weight: bold;', message.trim());
+      const chatMessage = {
         sender: username,
         content: message.trim(),
         timestamp: Date.now(),
-      });
+      };
+      console.log('%c[Chat] Created message object', 'background: #2a6a8a; color: #ffff00; padding: 4px;', chatMessage);
+      onSendMessage(chatMessage);
+      console.log('%c[Chat] Called onSendMessage callback', 'background: #2a6a8a; color: #ffff00; padding: 4px;', 'Complete');
       setMessage('');
     }
   };
