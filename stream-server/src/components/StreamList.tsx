@@ -21,7 +21,7 @@ export const StreamList: React.FC<StreamListProps> = ({ streams, onStreamSelect 
             <CardTitle>Stream {stream.id}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground mb-4">
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
               Type: {stream.kind}
             </p>
             <Button onClick={() => onStreamSelect(stream.id)}>
@@ -31,7 +31,7 @@ export const StreamList: React.FC<StreamListProps> = ({ streams, onStreamSelect 
         </Card>
       ))}
       {streams.length === 0 && (
-        <div className="col-span-full text-center text-muted-foreground">
+        <div className="col-span-full text-center text-[hsl(var(--muted-foreground))]">
           No active streams available
         </div>
       )}
